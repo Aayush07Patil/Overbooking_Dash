@@ -46,7 +46,7 @@ app.layout = html.Div([
     # Add interval component to trigger updates
     dcc.Interval(
         id='interval-component',
-        interval=300000,  # in milliseconds (30 seconds)
+        interval=1200000,  # in milliseconds (20 minutes)
         n_intervals=0
     )
 ])
