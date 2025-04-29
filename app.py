@@ -212,9 +212,6 @@ def update_graphs(n_intervals):
     origin = current_flight_data["flight_origin"]
     destination = current_flight_data["flight_destination"]
     
-    # Debug print to verify data
-    print(f"Updating graph with data: {flight_no}, {flight_date}, {origin}, {destination}")
-    
     if not all([flight_no, flight_date, origin, destination]):
         # Return empty message if missing data
         return html.Div("Waiting for flight data...", 
@@ -228,9 +225,6 @@ def update_graphs(n_intervals):
     
     # Get data from database
     df = get_flight_data(flight_no, flight_date, origin, destination)
-    
-    # Debug print to verify dataframe
-    print(f"Retrieved dataframe with {len(df)} rows and columns: {df.columns.tolist()}")
     
     if df.empty:
         return html.Div("No data found for the given parameters.", 
@@ -258,72 +252,60 @@ def update_graphs(n_intervals):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # Debug print to check processed data
-    print(f"Processed dataframe: {df.head(2).to_dict()}")
-    
-    # Create figure with weight graph and OBW values
+    # Create figure with dual y-axes
     fig = go.Figure()
     
-    # Add weight trace
+    # Add weight bars with primary y-axis
     fig.add_trace(
         go.Bar(
             x=df['FormattedDate'],
             y=df['ReportWeight'],
-            name='Weight',
+            name='Weight (kg)',
             marker_color='lightblue'
         )
     )
     
-    # Add OBW line chart as an overlay
+    # Add OBW line with secondary y-axis
     fig.add_trace(
         go.Scatter(
             x=df['FormattedDate'],
             y=df['OBW'],
-            name='Overbooking (OBW)',
+            name='OBW',
             mode='lines+markers',
             line=dict(color='red', width=2),
             marker=dict(size=8, symbol='circle'),
-            yaxis='y2'  # Use secondary y-axis
+            yaxis='y2'
         )
     )
     
-    # Calculate the max y-value for weight
-    max_weight = df['ReportWeight'].max() * 1.1  # Add 10% padding
-    
-    # Calculate range for OBW axis
-    obw_min = min(df['OBW'].min(), 0)  # Include zero if all values are positive
-    obw_max = max(df['OBW'].max(), 0)  # Include zero if all values are negative
-    obw_padding = 0.2 * (obw_max - obw_min) if obw_max != obw_min else 5  # 20% padding
-    obw_range = [obw_min - obw_padding, obw_max + obw_padding]
-    
-    # Update layout to match other dashboards
+    # Update layout with double Y-axis
     fig.update_layout(
         xaxis_title="Flight Date",
         yaxis=dict(
             title="Weight (kg)",
             rangemode="tozero",  # Make y-axis start from zero
+            side='left'
         ),
         yaxis2=dict(
-            title="Overbooking (OBW)",
+            title="OBW",
             overlaying='y',
             side='right',
-            range=obw_range,
             zeroline=True,
             zerolinewidth=1,
             zerolinecolor='black',
         ),
         legend=dict(
-            x=1.05,        # Just outside the right side
-            y=1,           # Align to top
+            x=1.05,
+            y=1,
             xanchor='left',
             yanchor='top',
-            bgcolor='rgba(255,255,255,0.8)',  # Semi-transparent background
+            bgcolor='rgba(255,255,255,0.8)',
             bordercolor='black',
             borderwidth=1
         ),
         template='plotly_white',
-        margin=dict(l=50, r=100, t=10, b=50),  # Reduced top margin
-        height=700,  # Explicit height
+        margin=dict(l=50, r=100, t=10, b=50),
+        height=700,
         hovermode="x unified"
     )
     
@@ -331,18 +313,9 @@ def update_graphs(n_intervals):
     graph = dcc.Graph(
         id='weight-obw-graph',
         figure=fig,
-        style={
-            'height': '100%',
-            'width': '100%'
-        },
-        config={
-            'responsive': True,
-            'displayModeBar': False
-        }
+        style={'height': '100%', 'width': '100%'},
+        config={'responsive': True, 'displayModeBar': False}
     )
-    
-    # Debug print to confirm graph creation
-    print("Created graph component successfully")
     
     return graph
 
