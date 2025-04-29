@@ -282,7 +282,7 @@ def update_graphs(n_intervals):
         title=dict(
             text="Weight and Overbooking Status",
             x=0.5,  # Center title
-            y=0.95  # Position near top
+            y=0.98  # Position near top
         ),
         xaxis_title="Flight Date",
         yaxis=dict(
