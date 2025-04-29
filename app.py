@@ -29,23 +29,19 @@ current_flight_data = {
     "flight_destination": ""
 }
 
-# Layout - full viewport with loading circle
+# Layout - simplified with fixed height/width
 app.layout = html.Div([
-    # Graph container with responsive layout and loading overlay
+    # Title at the top
+    html.H3("Weight and Overbooking Status", 
+            style={"textAlign": "center", "marginTop": "10px", "marginBottom": "10px"}),
+    
+    # Graph with loading indicator
     dcc.Loading(
         id="loading-graph",
         type="circle",
         color="#119DFF",
         children=[
-            html.Div(
-                id="graph-container",
-                style={
-                    "width": "100%", 
-                    "height": "100vh",  # Use viewport height
-                    "padding": "0px",   # Remove padding
-                    "margin": "0px"     # Remove margin
-                }
-            )
+            html.Div(id="graph-container", style={"height": "calc(100vh - 50px)", "width": "100%"})
         ]
     ),
     
@@ -58,13 +54,7 @@ app.layout = html.Div([
         interval=1200000,  # in milliseconds (20 minutes)
         n_intervals=0
     )
-], style={
-    "width": "100%",
-    "height": "100vh",  # Use full viewport height
-    "padding": "0px",   # Remove padding
-    "margin": "0px",    # Remove margin
-    "overflow": "hidden" # Prevent scrollbars
-})
+], style={"height": "100vh", "width": "100%", "margin": "0px", "padding": "0px", "overflow": "hidden"})
 
 # Function to connect to the database and get data
 def get_flight_data(flight_no, flight_date, origin, destination):
@@ -140,20 +130,28 @@ def get_flight_data(flight_no, flight_date, origin, destination):
         print("Using sample data instead...")
         
         # Generate sample data for demonstration
+        if isinstance(flight_date, str):
+            try:
+                flight_date = datetime.strptime(flight_date.split('T')[0], "%Y-%m-%d").date()
+            except:
+                flight_date = datetime.now().date()
+                
         sample_dates = [flight_date + timedelta(days=i) for i in range(15)]
         
-        # Create sample data
+        # Create sample data - ensure everything is a proper type
         sample_data = {
             'FltNo': [flight_no] * 15,
             'FltDate': sample_dates,
             'Origin': [origin] * 15,
             'Destination': [destination] * 15,
-            'ReportWeight': [round(1000 + i * 50 + (100 * (i % 3)), 2) for i in range(15)],  # Random-ish weights
-            'ReportVolume': [round(500 + i * 25 + (50 * (i % 4)), 2) for i in range(15)],     # Random-ish volumes
-            'OBW': [round(i * 2.5 - 10, 1) for i in range(15)]  # Sample overbooking values, some negative, some positive
+            'ReportWeight': [float(1000 + i * 50 + (100 * (i % 3))) for i in range(15)],  # Ensure float
+            'ReportVolume': [float(500 + i * 25 + (50 * (i % 4))) for i in range(15)],    # Ensure float
+            'OBW': [float(i * 2.5 - 10) for i in range(15)]  # Ensure float
         }
         
-        return pd.DataFrame(sample_data)
+        df = pd.DataFrame(sample_data)
+        print(f"Generated sample data: {len(df)} rows")
+        return df
 
 # API endpoint to receive data from .NET application
 @server.route('/update-data', methods=['POST'])
@@ -214,6 +212,9 @@ def update_graphs(n_intervals):
     origin = current_flight_data["flight_origin"]
     destination = current_flight_data["flight_destination"]
     
+    # Debug print to verify data
+    print(f"Updating graph with data: {flight_no}, {flight_date}, {origin}, {destination}")
+    
     if not all([flight_no, flight_date, origin, destination]):
         # Return empty message if missing data
         return html.Div("Waiting for flight data...", 
@@ -228,6 +229,9 @@ def update_graphs(n_intervals):
     # Get data from database
     df = get_flight_data(flight_no, flight_date, origin, destination)
     
+    # Debug print to verify dataframe
+    print(f"Retrieved dataframe with {len(df)} rows and columns: {df.columns.tolist()}")
+    
     if df.empty:
         return html.Div("No data found for the given parameters.", 
                         style={
@@ -240,7 +244,7 @@ def update_graphs(n_intervals):
     
     # Convert FltDate to datetime if it's not already
     if not pd.api.types.is_datetime64_any_dtype(df['FltDate']):
-        df['FltDate'] = pd.to_datetime(df['FltDate'])
+        df['FltDate'] = pd.to_datetime(df['FltDate'], errors='coerce')
     
     # Format dates for display
     df['FormattedDate'] = df['FltDate'].dt.strftime('%d %b').str.upper()
@@ -249,8 +253,13 @@ def update_graphs(n_intervals):
     if 'OBW' not in df.columns:
         df['OBW'] = 0  # Default overbooking values
     
-    # Convert OBW to numeric (if it's a string)
-    df['OBW'] = pd.to_numeric(df['OBW'], errors='coerce').fillna(0)
+    # Convert columns to numeric to ensure they're plotted correctly
+    for col in ['ReportWeight', 'ReportVolume', 'OBW']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # Debug print to check processed data
+    print(f"Processed dataframe: {df.head(2).to_dict()}")
     
     # Create figure with weight graph and OBW values
     fig = go.Figure()
@@ -284,16 +293,11 @@ def update_graphs(n_intervals):
     # Calculate range for OBW axis
     obw_min = min(df['OBW'].min(), 0)  # Include zero if all values are positive
     obw_max = max(df['OBW'].max(), 0)  # Include zero if all values are negative
-    obw_padding = 0.2 * (obw_max - obw_min)  # 20% padding
+    obw_padding = 0.2 * (obw_max - obw_min) if obw_max != obw_min else 5  # 20% padding
     obw_range = [obw_min - obw_padding, obw_max + obw_padding]
     
     # Update layout to match other dashboards
     fig.update_layout(
-        title=dict(
-            text='Weight and Overbooking Status',
-            x=0.5,  # Center title
-            y=0.98  # Position near top
-        ),
         xaxis_title="Flight Date",
         yaxis=dict(
             title="Weight (kg)",
@@ -318,38 +322,29 @@ def update_graphs(n_intervals):
             borderwidth=1
         ),
         template='plotly_white',
-        margin=dict(l=50, r=100, t=60, b=50),
-        autosize=True,
-        height=None,
-        hovermode="x unified",
-        annotations=[
-            dict(
-                x=date,
-                y=obw_val,
-                text=f"{obw_val:.1f}",
-                showarrow=False,
-                yshift=15 if obw_val >= 0 else -15,
-                font=dict(
-                    color="black",
-                    size=10
-                ),
-                yref='y2'
-            )
-            for date, obw_val in zip(df['FormattedDate'], df['OBW'])
-        ]
+        margin=dict(l=50, r=100, t=10, b=50),  # Reduced top margin
+        height=700,  # Explicit height
+        hovermode="x unified"
     )
     
-    return dcc.Graph(
+    # Create the graph component with explicit dimensions
+    graph = dcc.Graph(
+        id='weight-obw-graph',
         figure=fig,
         style={
-            'height': '100%',  # Take full height of parent container
-            'width': '100%'    # Take full width of parent container
+            'height': '100%',
+            'width': '100%'
         },
         config={
-            'responsive': True,  # Enable responsiveness
-            'displayModeBar': False  # Hide the mode bar for cleaner appearance
+            'responsive': True,
+            'displayModeBar': False
         }
     )
+    
+    # Debug print to confirm graph creation
+    print("Created graph component successfully")
+    
+    return graph
 
 if __name__ == '__main__':
-    app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8050)))
+    app.run_server(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8050)))
