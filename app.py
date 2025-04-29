@@ -1,10 +1,11 @@
 import dash
-from dash import dcc, html, Input, Output, State, callback
-import plotly.express as px
+from dash import dcc, html, Input, Output, callback
 import plotly.graph_objects as go
 import pandas as pd
+import dash_bootstrap_components as dbc
 from datetime import datetime, timedelta
 from flask import request, jsonify
+import os
 
 # Try to import pyodbc, but provide alternative if it fails
 try:
@@ -14,7 +15,10 @@ except ImportError:
     pyodbc = None
 
 # Initialize the Dash app
-app = dash.Dash(__name__, title="Overbooking Dashboard", suppress_callback_exceptions=True)
+app = dash.Dash(__name__, 
+                title="Overbooking Dashboard", 
+                suppress_callback_exceptions=True,
+                external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server  # Expose Flask server to add custom routes
 
 # Global variables to store the last received data
@@ -25,20 +29,25 @@ current_flight_data = {
     "flight_destination": ""
 }
 
-# Create the layout - removed input forms, added display panel
+# Layout - full viewport with loading circle
 app.layout = html.Div([
-    html.Div([
-        dcc.Loading(
-            id="loading-graphs",
-            type="circle",
-            children=[
-                html.Div([
-                    html.H3("Weight and Overbooking Status", style={"textAlign": "center"}),
-                    dcc.Graph(id="weight-graph")
-                ], style={"width": "100%", "display": "inline-block"})
-            ]
-        )
-    ], style={"marginTop": "20px"}),
+    # Graph container with responsive layout and loading overlay
+    dcc.Loading(
+        id="loading-graph",
+        type="circle",
+        color="#119DFF",
+        children=[
+            html.Div(
+                id="graph-container",
+                style={
+                    "width": "100%", 
+                    "height": "100vh",  # Use viewport height
+                    "padding": "0px",   # Remove padding
+                    "margin": "0px"     # Remove margin
+                }
+            )
+        ]
+    ),
     
     # Hidden div to store the flight data from the .NET application
     html.Div(id="flight-data-store", style={"display": "none"}),
@@ -49,44 +58,45 @@ app.layout = html.Div([
         interval=1200000,  # in milliseconds (20 minutes)
         n_intervals=0
     )
-])
+], style={
+    "width": "100%",
+    "height": "100vh",  # Use full viewport height
+    "padding": "0px",   # Remove padding
+    "margin": "0px",    # Remove margin
+    "overflow": "hidden" # Prevent scrollbars
+})
 
 # Function to connect to the database and get data
 def get_flight_data(flight_no, flight_date, origin, destination):
     # For demonstration purposes, if DB connection fails, use sample data
     try:
-        # For Azure SQL Database, Windows Authentication (Trusted_Connection) won't work
-        # We need to use SQL Authentication with the proper driver
-        try:
-            # Method 1: Using ODBC Driver 17 (recommended for Azure SQL)
-            conn = pyodbc.connect(
-                'DRIVER={ODBC Driver 17 for SQL Server};'
-                'SERVER=qidtestingindia.database.windows.net;'  # Remove the port from server name
-                'DATABASE=rm-demo-erp-db;'
-                'UID=rmdemodeploymentuser;'  # Replace with actual username
-                'PWD=rm#demo#2515;'  # Replace with actual password
-                'Encrypt=yes;'  # Required for Azure SQL
-                'TrustServerCertificate=no;'
-                'Connection Timeout=30;'
-            )
-        except Exception as e1:
-            print(f"First connection attempt failed: {e1}")
-            try:
-                # Method 2: Using SQL Server driver as fallback
-                conn = pyodbc.connect(
-                    'DRIVER={SQL Server};'
-                    'SERVER=qidtestingindia.database.windows.net;'  # Remove the port from server name
-                    'DATABASE=rm-demo-erp-db;'
-                    'UID=rmdemodeploymentuser;'  # Replace with actual username
-                    'PWD=rm#demo#2515;'  # Replace with actual password
-                    'Encrypt=yes;'  # Required for Azure SQL
-                )
-            except Exception as e2:
-                print(f"Second connection attempt failed: {e2}")
-                # If both connection methods fail, raise exception to use sample data
-                raise Exception("Cannot connect to database")
+        if not pyodbc:
+            raise ImportError("pyodbc is not available")
+
+        # Get database connection details from environment variables
+        db_server = os.environ.get('DB_SERVER', '')
+        db_name = os.environ.get('DB_NAME', '')
+        db_user = os.environ.get('DB_USER', '')
+        db_password = os.environ.get('DB_PASSWORD', '')
         
-        # Create a cursor
+        # Check if we have all the required connection details
+        if not all([db_server, db_name, db_user, db_password]):
+            print("Missing database connection details. Using sample data instead...")
+            raise Exception("Missing database connection details")
+        
+        # Try connecting to the database
+        conn_str = (
+            f'DRIVER={{ODBC Driver 17 for SQL Server}};'
+            f'SERVER={db_server};'
+            f'DATABASE={db_name};'
+            f'UID={db_user};'
+            f'PWD={db_password};'
+            f'Encrypt=yes;'
+            f'TrustServerCertificate=no;'
+            f'Connection Timeout=30;'
+        )
+        
+        conn = pyodbc.connect(conn_str)
         cursor = conn.cursor()
         
         # Format the date for SQL query
@@ -170,9 +180,31 @@ def update_data():
         print(f"Error processing data: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# Callback to update the graph based on stored flight data
+# New API endpoint to reset data
+@server.route('/reset-data', methods=['POST'])
+def reset_data():
+    global current_flight_data
+    
+    try:
+        # Reset the current flight data to empty values
+        current_flight_data = {
+            "flight_no": "",
+            "flight_date": datetime.now().date().isoformat(),
+            "flight_origin": "",
+            "flight_destination": ""
+        }
+        
+        print("Dashboard data reset successfully")
+        
+        return jsonify({"status": "success", "message": "Data reset successfully"}), 200
+    
+    except Exception as e:
+        print(f"Error resetting data: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+# Callback to update the graph container based on stored flight data
 @callback(
-    Output("weight-graph", "figure"),
+    Output("graph-container", "children"),
     [Input("interval-component", "n_intervals")]
 )
 def update_graphs(n_intervals):
@@ -183,41 +215,35 @@ def update_graphs(n_intervals):
     destination = current_flight_data["flight_destination"]
     
     if not all([flight_no, flight_date, origin, destination]):
-        # Return empty figure if no data is available
-        empty_fig = go.Figure()
-        empty_fig.update_layout(
-            xaxis={"visible": False},
-            yaxis={"visible": False},
-            annotations=[{
-                "text": "Waiting for flight data...",
-                "showarrow": False,
-                "font": {"size": 16}
-            }]
-        )
-        
-        return empty_fig
+        # Return empty message if missing data
+        return html.Div("Waiting for flight data...", 
+                        style={
+                            "display": "flex",
+                            "justifyContent": "center",
+                            "alignItems": "center",
+                            "height": "100%",
+                            "fontSize": "16px"
+                        })
     
     # Get data from database
     df = get_flight_data(flight_no, flight_date, origin, destination)
     
     if df.empty:
-        # Return empty figure if no data
-        empty_fig = go.Figure()
-        empty_fig.update_layout(
-            xaxis={"visible": False},
-            yaxis={"visible": False},
-            annotations=[{
-                "text": "No data found for the given parameters.",
-                "showarrow": False,
-                "font": {"size": 16}
-            }]
-        )
-        
-        return empty_fig
+        return html.Div("No data found for the given parameters.", 
+                        style={
+                            "display": "flex",
+                            "justifyContent": "center",
+                            "alignItems": "center",
+                            "height": "100%",
+                            "fontSize": "16px"
+                        })
     
     # Convert FltDate to datetime if it's not already
     if not pd.api.types.is_datetime64_any_dtype(df['FltDate']):
         df['FltDate'] = pd.to_datetime(df['FltDate'])
+    
+    # Format dates for display
+    df['FormattedDate'] = df['FltDate'].dt.strftime('%d %b').str.upper()
     
     # Ensure we have the OBW column
     if 'OBW' not in df.columns:
@@ -232,7 +258,7 @@ def update_graphs(n_intervals):
     # Add weight trace
     fig.add_trace(
         go.Bar(
-            x=df['FltDate'],
+            x=df['FormattedDate'],
             y=df['ReportWeight'],
             name='Weight',
             marker_color='lightblue'
@@ -242,48 +268,88 @@ def update_graphs(n_intervals):
     # Add OBW line chart as an overlay
     fig.add_trace(
         go.Scatter(
-            x=df['FltDate'],
+            x=df['FormattedDate'],
             y=df['OBW'],
             name='Overbooking (OBW)',
             mode='lines+markers',
             line=dict(color='red', width=2),
-            marker=dict(size=8, symbol='circle')
+            marker=dict(size=8, symbol='circle'),
+            yaxis='y2'  # Use secondary y-axis
         )
     )
     
-    # Update layout
+    # Calculate the max y-value for weight
+    max_weight = df['ReportWeight'].max() * 1.1  # Add 10% padding
+    
+    # Calculate range for OBW axis
+    obw_min = min(df['OBW'].min(), 0)  # Include zero if all values are positive
+    obw_max = max(df['OBW'].max(), 0)  # Include zero if all values are negative
+    obw_padding = 0.2 * (obw_max - obw_min)  # 20% padding
+    obw_range = [obw_min - obw_padding, obw_max + obw_padding]
+    
+    # Update layout to match other dashboards
     fig.update_layout(
-        xaxis=dict(
-            title="Flight Date",
-            tickformat="%d %b",  # Format the date as "DD MMM" (e.g., "07 JUN")
-            tickmode="array",    # Force all ticks to be shown
-            tickvals=df['FltDate'],  # Show ticks for all dates in the dataset
-            ticktext=[date.strftime("%d %b").upper() for date in df['FltDate']]  # Format date labels
+        title=dict(
+            text='Weight and Overbooking Status',
+            x=0.5,  # Center title
+            y=0.98  # Position near top
         ),
+        xaxis_title="Flight Date",
         yaxis=dict(
             title="Weight (kg)",
-            rangemode="tozero"  # Make y-axis start from zero
+            rangemode="tozero",  # Make y-axis start from zero
         ),
-        legend=dict(x=0.02, y=0.98),
+        yaxis2=dict(
+            title="Overbooking (OBW)",
+            overlaying='y',
+            side='right',
+            range=obw_range,
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor='black',
+        ),
+        legend=dict(
+            x=1.05,        # Just outside the right side
+            y=1,           # Align to top
+            xanchor='left',
+            yanchor='top',
+            bgcolor='rgba(255,255,255,0.8)',  # Semi-transparent background
+            bordercolor='black',
+            borderwidth=1
+        ),
+        template='plotly_white',
+        margin=dict(l=50, r=100, t=60, b=50),
+        autosize=True,
+        height=None,
         hovermode="x unified",
-        # Add annotations for OBW values - safely handle string conversion
         annotations=[
             dict(
                 x=date,
                 y=obw_val,
-                text=f"{obw_val:.1f}" if obw_val > 0 else f"{obw_val:.1f}" if obw_val < 0 else "0",
+                text=f"{obw_val:.1f}",
                 showarrow=False,
-                yshift=10,
+                yshift=15 if obw_val >= 0 else -15,
                 font=dict(
                     color="black",
                     size=10
-                )
+                ),
+                yref='y2'
             )
-            for date, obw_val in zip(df['FltDate'], df['OBW'])
+            for date, obw_val in zip(df['FormattedDate'], df['OBW'])
         ]
     )
     
-    return fig
+    return dcc.Graph(
+        figure=fig,
+        style={
+            'height': '100%',  # Take full height of parent container
+            'width': '100%'    # Take full width of parent container
+        },
+        config={
+            'responsive': True,  # Enable responsiveness
+            'displayModeBar': False  # Hide the mode bar for cleaner appearance
+        }
+    )
 
 if __name__ == '__main__':
     app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8050)))
