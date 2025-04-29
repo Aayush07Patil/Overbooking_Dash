@@ -37,7 +37,7 @@ app.layout = html.Div([
         type="circle",
         color="#119DFF",
         children=[
-            html.Div(id="graph-container", style={"height": "calc(100vh - 50px)", "width": "100%"})
+            html.Div(id="graph-container", style={"height": "100vh", "width": "100%"})
         ]
     ),
     
@@ -277,12 +277,12 @@ def update_graphs(n_intervals):
         )
     )
     
-    # Update layout with single Y-axis
+    # Update layout with single Y-axis and title in plot
     fig.update_layout(
         title=dict(
-            text='Weight and Overbooking View',
+            text="Weight and Overbooking Status",
             x=0.5,  # Center title
-            y=0.98  # Position near top
+            y=0.95  # Position near top
         ),
         xaxis_title="Flight Date",
         yaxis=dict(
@@ -300,7 +300,7 @@ def update_graphs(n_intervals):
             borderwidth=1
         ),
         template='plotly_white',
-        margin=dict(l=50, r=100, t=10, b=50),
+        margin=dict(l=50, r=100, t=50, b=50),  # Increased top margin for title
         height=700,
         hovermode="x unified"
     )
