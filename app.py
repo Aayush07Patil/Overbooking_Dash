@@ -31,10 +31,6 @@ current_flight_data = {
 
 # Layout - simplified with fixed height/width
 app.layout = html.Div([
-    # Title at the top
-    html.H3("Weight and Overbooking Status", 
-            style={"textAlign": "center", "marginTop": "10px", "marginBottom": "10px"}),
-    
     # Graph with loading indicator
     dcc.Loading(
         id="loading-graph",
@@ -252,10 +248,14 @@ def update_graphs(n_intervals):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # Create figure with dual y-axes
+    # Calculate max OBW value and set y-axis max to 1000 higher
+    max_obw = df['OBW'].max()
+    y_axis_max = 1000 + max_obw
+    
+    # Create figure with weight graph and OBW values
     fig = go.Figure()
     
-    # Add weight bars with primary y-axis
+    # Add weight bars
     fig.add_trace(
         go.Bar(
             x=df['FormattedDate'],
@@ -265,7 +265,7 @@ def update_graphs(n_intervals):
         )
     )
     
-    # Add OBW line with secondary y-axis
+    # Add OBW line
     fig.add_trace(
         go.Scatter(
             x=df['FormattedDate'],
@@ -273,26 +273,22 @@ def update_graphs(n_intervals):
             name='OBW',
             mode='lines+markers',
             line=dict(color='red', width=2),
-            marker=dict(size=8, symbol='circle'),
-            yaxis='y2'
+            marker=dict(size=8, symbol='circle')
         )
     )
     
-    # Update layout with double Y-axis
+    # Update layout with single Y-axis
     fig.update_layout(
+        title=dict(
+            text='Weight and Overbooking View',
+            x=0.5,  # Center title
+            y=0.98  # Position near top
+        ),
         xaxis_title="Flight Date",
         yaxis=dict(
-            title="Weight (kg)",
+            title="Weight (kg) / OBW",
             rangemode="tozero",  # Make y-axis start from zero
-            side='left'
-        ),
-        yaxis2=dict(
-            title="OBW",
-            overlaying='y',
-            side='right',
-            zeroline=True,
-            zerolinewidth=1,
-            zerolinecolor='black',
+            range=[0, y_axis_max]  # Set range to 1000 higher than max OBW
         ),
         legend=dict(
             x=1.05,
