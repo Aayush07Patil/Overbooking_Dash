@@ -314,14 +314,14 @@ def update_graphs(n_intervals):
     # Create figure
     fig = go.Figure()
     
-    # Add past weight bars (light green)
+    # Add past weight bars (green)
     if not past_df.empty:
         fig.add_trace(
             go.Bar(
                 x=past_df['FormattedDate'],
                 y=past_df['ReportWeight'],
                 name='Past Weight (kg)',
-                marker_color='lightgreen',
+                marker_color='green',
                 showlegend=True
             )
         )
@@ -346,7 +346,7 @@ def update_graphs(n_intervals):
                 x=future_df['FormattedDate'],
                 y=future_df['ReportWeight'],
                 name='Pred Weight (kg)',
-                marker_color='lightblue',
+                marker_color='blue',
                 showlegend=True
             )
         )
@@ -498,14 +498,14 @@ def update_graphs(n_intervals):
             fig.data = []
             
             # Recreate traces with updated data
-            # Add past weight bars (light green)
+            # Add past weight bars (green)
             if not past_df.empty:
                 fig.add_trace(
                     go.Bar(
                         x=past_df['FormattedDate'],
                         y=past_df['ReportWeight'],
                         name='Past Weight (kg)',
-                        marker_color='lightgreen',
+                        marker_color='green',
                         showlegend=True
                     )
                 )
@@ -530,7 +530,7 @@ def update_graphs(n_intervals):
                         x=future_df['FormattedDate'],
                         y=future_df['ReportWeight'],
                         name='Pred Weight (kg)',
-                        marker_color='lightblue',
+                        marker_color='blue',
                         showlegend=True
                     )
                 )
