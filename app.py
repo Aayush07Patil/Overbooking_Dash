@@ -65,10 +65,10 @@ def get_flight_data(flight_no, flight_date, origin, destination):
             raise ImportError("pyodbc is not available")
 
         # Get database connection details from environment variables
-        db_server = os.environ.get('DB_SERVER', 'qidtestingindia.database.windows.net')
-        db_name = os.environ.get('DB_NAME', 'rm-demo-erp-db')
-        db_user = os.environ.get('DB_USER', 'rmdemodeploymentuser')
-        db_password = os.environ.get('DB_PASSWORD', 'rm#demo#2515')
+        db_server = os.environ.get('DB_SERVER', '')
+        db_name = os.environ.get('DB_NAME', '')
+        db_user = os.environ.get('DB_USER', '')
+        db_password = os.environ.get('DB_PASSWORD', '')
         
         # Check if we have all the required connection details
         if not all([db_server, db_name, db_user, db_password]):
