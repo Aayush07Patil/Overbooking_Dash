@@ -320,7 +320,7 @@ def update_graphs(n_intervals):
             go.Bar(
                 x=past_df['FormattedDate'],
                 y=past_df['ReportWeight'],
-                name='Past Wt',
+                name='Past Wt.',
                 marker_color='green',
                 showlegend=True
             )
@@ -345,7 +345,7 @@ def update_graphs(n_intervals):
             go.Bar(
                 x=future_df['FormattedDate'],
                 y=future_df['ReportWeight'],
-                name='Pred Wt',
+                name='Pred Wt.',
                 marker_color='blue',
                 showlegend=True
             )
