@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, date
 from flask import request, jsonify
 import os
 import numpy as np
+import traceback
 
 # Try to import pyodbc, but provide alternative if it fails
 try:
@@ -32,6 +33,9 @@ current_flight_data = {
 
 # Layout - simplified with fixed height/width
 app.layout = html.Div([
+    # Store component to store the flight data
+    dcc.Store(id='flight-data-store'),
+    
     # Graph with loading indicator
     dcc.Loading(
         id="loading-graph",
@@ -42,16 +46,62 @@ app.layout = html.Div([
         ]
     ),
     
-    # Hidden div to store the flight data from the .NET application
-    html.Div(id="flight-data-store", style={"display": "none"}),
-    
     # Add interval component to trigger updates
     dcc.Interval(
         id='interval-component',
         interval=1200000,  # in milliseconds (20 minutes)
         n_intervals=0
-    )
+    ),
+    
+    # Location component to track URL
+    dcc.Location(id='url', refresh=False),
+    
+    # Hidden div to trigger callback on page load
+    html.Div(id='page-load-trigger', style={'display': 'none'})
 ], style={"height": "100vh", "width": "100%", "margin": "0px", "padding": "0px", "overflow": "hidden"})
+
+# Initialize Flask routes BEFORE Dash callbacks
+@server.before_request
+def before_request_func():
+    # Process query parameters on every request
+    query_params = request.args
+    if query_params:
+        # Debug log
+        print(f"INTERCEPTED QUERY PARAMS: {query_params}")
+        
+        # Update the global variable
+        global current_flight_data
+        
+        # Check if we're resetting the dashboard
+        if query_params.get('reset') == 'true':
+            print("Resetting dashboard data via query parameter")
+            current_flight_data = {
+                "flight_no": "",
+                "flight_date": datetime.now().date().isoformat(),
+                "flight_origin": "",
+                "flight_destination": ""
+            }
+        # Check if we have flight parameters
+        elif all(param in query_params for param in ['flight_no', 'flight_date']):
+            print("Updating dashboard data via query parameters")
+            current_flight_data = {
+                "flight_no": query_params.get('flight_no', ''),
+                "flight_date": query_params.get('flight_date', datetime.now().date().isoformat()),
+                "flight_origin": query_params.get('flight_origin', ''),
+                "flight_destination": query_params.get('flight_destination', '')
+            }
+            print(f"Updated flight data to: {current_flight_data}")
+
+# Callback to update the data store on page load or URL change
+@app.callback(
+    Output('flight-data-store', 'data'),
+    [Input('url', 'pathname'),
+     Input('url', 'search'),
+     Input('interval-component', 'n_intervals')]
+)
+def update_store_from_url(pathname, search, n_intervals):
+    # Return the current flight data from the global variable
+    return current_flight_data
 
 # Function to connect to the database and get data
 def get_flight_data(flight_no, flight_date, origin, destination):
@@ -169,6 +219,8 @@ def get_flight_data(flight_no, flight_date, origin, destination):
         print(f"Generated sample data: {len(df)} rows")
         return df
 
+# KEEP THE ORIGINAL POST ENDPOINTS FOR BACKWARD COMPATIBILITY
+
 # API endpoint to receive data from .NET application
 @server.route('/update-data', methods=['POST'])
 def update_data():
@@ -186,15 +238,15 @@ def update_data():
             "flight_destination": data.get("flight_destination", "")
         }
         
-        print(f"Received data: {current_flight_data}")
+        print(f"Received data via POST: {current_flight_data}")
         
         return jsonify({"status": "success", "message": "Data received successfully"}), 200
     
     except Exception as e:
-        print(f"Error processing data: {e}")
+        print(f"Error processing POST data: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# New API endpoint to reset data
+# API endpoint to reset data
 @server.route('/reset-data', methods=['POST'])
 def reset_data():
     global current_flight_data
@@ -208,401 +260,436 @@ def reset_data():
             "flight_destination": ""
         }
         
-        print("Dashboard data reset successfully")
+        print("Dashboard data reset via POST")
         
         return jsonify({"status": "success", "message": "Data reset successfully"}), 200
     
     except Exception as e:
-        print(f"Error resetting data: {e}")
+        print(f"Error resetting data via POST: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
 # Callback to update the graph container based on stored flight data
-@callback(
+@app.callback(
     Output("graph-container", "children"),
-    [Input("interval-component", "n_intervals")]
+    [Input("flight-data-store", "data")]
 )
-def update_graphs(n_intervals):
-    # Get the current flight data
-    flight_no = current_flight_data["flight_no"]
-    flight_date = current_flight_data["flight_date"]
-    origin = current_flight_data["flight_origin"]
-    destination = current_flight_data["flight_destination"]
-    
-    if not all([flight_no, flight_date, origin, destination]):
-        # Return empty message if missing data
-        return html.Div("Waiting for flight data...", 
-                        style={
-                            "display": "flex",
-                            "justifyContent": "center",
-                            "alignItems": "center",
-                            "height": "100%",
-                            "fontSize": "16px"
-                        })
-    
-    # Get data from database
-    df = get_flight_data(flight_no, flight_date, origin, destination)
-    
-    if df.empty:
-        return html.Div("No data found for the given parameters.", 
-                        style={
-                            "display": "flex",
-                            "justifyContent": "center",
-                            "alignItems": "center",
-                            "height": "100%",
-                            "fontSize": "16px"
-                        })
-    
-    # Convert FltDate to datetime if it's not already
-    if not pd.api.types.is_datetime64_any_dtype(df['FltDate']):
-        df['FltDate'] = pd.to_datetime(df['FltDate'], errors='coerce')
-    
-    # Format dates for display
-    df['FormattedDate'] = df['FltDate'].dt.strftime('%d %b').str.upper()
-    
-    # Ensure we have the OBW column
-    if 'OBW' not in df.columns:
-        df['OBW'] = 0  # Default overbooking values
-    
-    # Convert columns to numeric to ensure they're plotted correctly
-    for col in ['ReportWeight', 'ReportVolume', 'OBW']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-    
-    # Get today's date and format it the same way as in the dataframe
-    today = datetime.now().date()
-    today_str = today.strftime('%d %b').upper()
-    
-    # Get departure date (from flight_date parameter) and format it
-    if isinstance(flight_date, str):
-        try:
-            departure_date = datetime.strptime(flight_date.split('T')[0], "%Y-%m-%d").date()
-        except:
-            departure_date = datetime.now().date()
-    else:
-        departure_date = flight_date
-    
-    departure_str = departure_date.strftime('%d %b').upper()
-    
-    # Print for debugging
-    print(f"Departure date: {departure_date}, formatted as: {departure_str}")
-    print(f"Available dates in dataset: {df['FormattedDate'].unique()}")
-    
-    # Check if today is in the dataset
-    today_in_dataset = today_str in df['FormattedDate'].values
-    
-    # Split data based on date (before today vs today and after)
-    if today_in_dataset:
-        # Convert FltDate to date objects for comparison
-        df['DateOnly'] = df['FltDate'].dt.date
+def update_graphs(flight_data):
+    try:
+        # Use the flight data from the store if available
+        if flight_data:
+            flight_no = flight_data.get("flight_no", "")
+            flight_date = flight_data.get("flight_date", "")
+            origin = flight_data.get("flight_origin", "")
+            destination = flight_data.get("flight_destination", "")
+        else:
+            # Fall back to global variable if store is empty
+            flight_no = current_flight_data["flight_no"]
+            flight_date = current_flight_data["flight_date"]
+            origin = current_flight_data["flight_origin"]
+            destination = current_flight_data["flight_destination"]
         
-        # Create masks for past and future dates
-        past_mask = df['DateOnly'] < today
-        future_mask = df['DateOnly'] >= today
+        # For debugging
+        print(f"Updating overbooking graph with: Flight={flight_no}, Date={flight_date}, Origin={origin}, Dest={destination}")
         
-        # Split the dataframe
-        past_df = df[past_mask]
-        future_df = df[future_mask]
-    else:
-        # If today is not in the dataset, consider all data as future data
-        past_df = pd.DataFrame(columns=df.columns)  # Empty DataFrame
-        future_df = df
-    
-    # Calculate max OBW value and set y-axis max to 1000 higher
-    max_obw = df['OBW'].max()
-    y_axis_max = 1000 + max_obw
-    
-    # Create figure
-    fig = go.Figure()
-    
-    # Add past weight bars (green)
-    if not past_df.empty:
-        fig.add_trace(
-            go.Bar(
-                x=past_df['FormattedDate'],
-                y=past_df['ReportWeight'],
-                name='Past Wt.',
-                marker_color='green',
-                showlegend=True
-            )
-        )
+        if not all([flight_no, flight_date, origin, destination]):
+            # Return empty message if missing data
+            return html.Div("Waiting for flight data...", 
+                            style={
+                                "display": "flex",
+                                "justifyContent": "center",
+                                "alignItems": "center",
+                                "height": "100%",
+                                "fontSize": "16px"
+                            })
         
-        # Add past OBW line (red)
-        fig.add_trace(
-            go.Scatter(
-                x=past_df['FormattedDate'],
-                y=past_df['OBW'],
-                name='Past OBW',
-                mode='lines+markers',
-                line=dict(color='red', width=2),
-                marker=dict(size=8, symbol='circle'),
-                showlegend=True
-            )
-        )
-    
-    # Add future weight bars (blue)
-    if not future_df.empty:
-        fig.add_trace(
-            go.Bar(
-                x=future_df['FormattedDate'],
-                y=future_df['ReportWeight'],
-                name='Pred Wt.',
-                marker_color='blue',
-                showlegend=True
-            )
-        )
+        # Get data from database
+        df = get_flight_data(flight_no, flight_date, origin, destination)
         
-        # Add future OBW line (orange)
-        fig.add_trace(
-            go.Scatter(
-                x=future_df['FormattedDate'],
-                y=future_df['OBW'],
-                name='Pred OBW',
-                mode='lines+markers',
-                line=dict(color='orange', width=2),
-                marker=dict(size=8, symbol='circle'),
-                showlegend=True
-            )
-        )
-    
-    # Calculate the max y-value for vertical lines
-    max_y = max(df['ReportWeight'].max(), df['OBW'].max()) * 1.1
-    
-    # Calculate the y-axis maximum (500 more than the height of "Today" annotation)
-    y_axis_max = max_y + 500
-    
-    # Try to add today's line if today is in the dataset
-    if today_in_dataset:
-        try:
-            fig.add_shape(
-                type='line',
-                x0=today_str,
-                x1=today_str,
-                y0=0,
-                y1=max_y,
-                line=dict(color='black', width=1.5, dash='dot'),
-                xref='x',
-                yref='y'
+        if df.empty:
+            return html.Div(f"No data found for flight {flight_no} from {origin} to {destination} on {flight_date}.", 
+                            style={
+                                "display": "flex",
+                                "justifyContent": "center",
+                                "alignItems": "center",
+                                "height": "100%",
+                                "fontSize": "16px"
+                            })
+        
+        # Convert FltDate to datetime if it's not already
+        if not pd.api.types.is_datetime64_any_dtype(df['FltDate']):
+            df['FltDate'] = pd.to_datetime(df['FltDate'], errors='coerce')
+        
+        # Format dates for display
+        df['FormattedDate'] = df['FltDate'].dt.strftime('%d %b').str.upper()
+        
+        # Ensure we have the OBW column
+        if 'OBW' not in df.columns:
+            df['OBW'] = 0  # Default overbooking values
+        
+        # Convert columns to numeric to ensure they're plotted correctly
+        for col in ['ReportWeight', 'ReportVolume', 'OBW']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # Get today's date and format it the same way as in the dataframe
+        today = datetime.now().date()
+        today_str = today.strftime('%d %b').upper()
+        
+        # Get departure date (from flight_date parameter) and format it
+        if isinstance(flight_date, str):
+            try:
+                departure_date = datetime.strptime(flight_date.split('T')[0], "%Y-%m-%d").date()
+            except:
+                departure_date = datetime.now().date()
+        else:
+            departure_date = flight_date
+        
+        departure_str = departure_date.strftime('%d %b').upper()
+        
+        # Print for debugging
+        print(f"Departure date: {departure_date}, formatted as: {departure_str}")
+        print(f"Available dates in dataset: {df['FormattedDate'].unique()}")
+        
+        # Check if today is in the dataset
+        today_in_dataset = today_str in df['FormattedDate'].values
+        
+        # Split data based on date (before today vs today and after)
+        if today_in_dataset:
+            # Convert FltDate to date objects for comparison
+            df['DateOnly'] = df['FltDate'].dt.date
+            
+            # Create masks for past and future dates
+            past_mask = df['DateOnly'] < today
+            future_mask = df['DateOnly'] >= today
+            
+            # Split the dataframe
+            past_df = df[past_mask]
+            future_df = df[future_mask]
+        else:
+            # If today is not in the dataset, consider all data as future data
+            past_df = pd.DataFrame(columns=df.columns)  # Empty DataFrame
+            future_df = df
+        
+        # Calculate max OBW value and set y-axis max to 1000 higher
+        max_obw = df['OBW'].max()
+        y_axis_max = 1000 + max_obw
+        
+        # Create figure
+        fig = go.Figure()
+        
+        # Add past weight bars (green)
+        if not past_df.empty:
+            fig.add_trace(
+                go.Bar(
+                    x=past_df['FormattedDate'],
+                    y=past_df['ReportWeight'],
+                    name='Past Wt.',
+                    marker_color='green',
+                    showlegend=True
+                )
             )
             
-            fig.add_annotation(
-                x=today_str,
-                y=max_y,
-                text="Today",
-                showarrow=True,
-                arrowhead=2,
-                ax=0,
-                ay=-40
+            # Add past OBW line (red)
+            fig.add_trace(
+                go.Scatter(
+                    x=past_df['FormattedDate'],
+                    y=past_df['OBW'],
+                    name='Past OBW',
+                    mode='lines+markers',
+                    line=dict(color='red', width=2),
+                    marker=dict(size=8, symbol='circle'),
+                    showlegend=True
+                )
+            )
+        
+        # Add future weight bars (blue)
+        if not future_df.empty:
+            fig.add_trace(
+                go.Bar(
+                    x=future_df['FormattedDate'],
+                    y=future_df['ReportWeight'],
+                    name='Pred Wt.',
+                    marker_color='blue',
+                    showlegend=True
+                )
             )
             
-            # Add a dotted orange line connecting past and future OBW sections at today's date
-            # This will be at the transition point between red and orange OBW lines
-            if not past_df.empty and not future_df.empty:
-                # Find the OBW values closest to today in both past and future dataframes
-                past_today = past_df.loc[past_df['FltDate'] == past_df['FltDate'].max()]
-                future_today = future_df.loc[future_df['FltDate'] == future_df['FltDate'].min()]
+            # Add future OBW line (orange)
+            fig.add_trace(
+                go.Scatter(
+                    x=future_df['FormattedDate'],
+                    y=future_df['OBW'],
+                    name='Pred OBW',
+                    mode='lines+markers',
+                    line=dict(color='orange', width=2),
+                    marker=dict(size=8, symbol='circle'),
+                    showlegend=True
+                )
+            )
+        
+        # Calculate the max y-value for vertical lines
+        max_y = max(df['ReportWeight'].max(), df['OBW'].max()) * 1.1
+        
+        # Calculate the y-axis maximum (500 more than the height of "Today" annotation)
+        y_axis_max = max_y + 500
+        
+        # Try to add today's line if today is in the dataset
+        if today_in_dataset:
+            try:
+                fig.add_shape(
+                    type='line',
+                    x0=today_str,
+                    x1=today_str,
+                    y0=0,
+                    y1=max_y,
+                    line=dict(color='black', width=1.5, dash='dot'),
+                    xref='x',
+                    yref='y'
+                )
                 
-                if not past_today.empty and not future_today.empty:
-                    # Get OBW values and dates for the connection
-                    past_obw = past_today['OBW'].iloc[0]
-                    future_obw = future_today['OBW'].iloc[0]
-                    past_date = past_today['FormattedDate'].iloc[0]
-                    future_date = future_today['FormattedDate'].iloc[0]
+                fig.add_annotation(
+                    x=today_str,
+                    y=max_y,
+                    text="Today",
+                    showarrow=True,
+                    arrowhead=2,
+                    ax=0,
+                    ay=-40
+                )
+                
+                # Add a dotted orange line connecting past and future OBW sections at today's date
+                # This will be at the transition point between red and orange OBW lines
+                if not past_df.empty and not future_df.empty:
+                    # Find the OBW values closest to today in both past and future dataframes
+                    past_today = past_df.loc[past_df['FltDate'] == past_df['FltDate'].max()]
+                    future_today = future_df.loc[future_df['FltDate'] == future_df['FltDate'].min()]
                     
-                    # Add horizontal dotted orange line connecting the last point of past OBW to the first point of future OBW
+                    if not past_today.empty and not future_today.empty:
+                        # Get OBW values and dates for the connection
+                        past_obw = past_today['OBW'].iloc[0]
+                        future_obw = future_today['OBW'].iloc[0]
+                        past_date = past_today['FormattedDate'].iloc[0]
+                        future_date = future_today['FormattedDate'].iloc[0]
+                        
+                        # Add horizontal dotted orange line connecting the last point of past OBW to the first point of future OBW
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[past_date, future_date],
+                                y=[past_obw, future_obw],
+                                mode='lines',
+                                line=dict(color='orange', width=2, dash='dot'),
+                                showlegend=False
+                            )
+                        )
+            except Exception as e:
+                print(f"Error adding today's line or separator: {e}")
+                # Skip adding today's line if there's an error
+                pass
+        else:
+            # If today isn't in the dataset but we have both past and future data,
+            # add the dotted orange line at the transition point
+            if not past_df.empty and not future_df.empty:
+                try:
+                    # Find the last date in past_df and first date in future_df
+                    transition_date_past = past_df.loc[past_df['FltDate'] == past_df['FltDate'].max()]
+                    transition_date_future = future_df.loc[future_df['FltDate'] == future_df['FltDate'].min()]
+                    
+                    if not transition_date_past.empty and not transition_date_future.empty:
+                        # Get dates and OBW values for transition
+                        transition_date_str_past = transition_date_past['FormattedDate'].iloc[0]
+                        transition_date_str_future = transition_date_future['FormattedDate'].iloc[0]
+                        past_obw = transition_date_past['OBW'].iloc[0]
+                        future_obw = transition_date_future['OBW'].iloc[0]
+                        
+                        # Add dotted orange line between the two dates
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[transition_date_str_past, transition_date_str_future],
+                                y=[past_obw, future_obw],
+                                mode='lines',
+                                line=dict(color='orange', width=2, dash='dot'),
+                                showlegend=False
+                            )
+                        )
+                except Exception as e:
+                    print(f"Error adding separator line: {e}")
+                    pass
+        
+        # Make sure departure date appears on x-axis (but don't add a vertical line)
+        try:
+            # If departure date is not in dataset, add it as a category on x-axis
+            if departure_str not in df['FormattedDate'].values:
+                print(f"Departure date {departure_str} not found in dataset, adding to x-axis")
+                
+                # Add an empty entry for this date to make it appear on the x-axis
+                new_row = pd.DataFrame({
+                    'FltNo': [flight_no],
+                    'FltDate': [departure_date],
+                    'FormattedDate': [departure_str],
+                    'Origin': [origin],
+                    'Destination': [destination],
+                    'ReportWeight': [0],  # Zero values won't show a bar
+                    'ReportVolume': [0],
+                    'OBW': [0],
+                    'DateOnly': [departure_date]
+                })
+                
+                # Add this to the appropriate dataframe (past or future)
+                if departure_date < today:
+                    if not past_df.empty:
+                        past_df = pd.concat([past_df, new_row], ignore_index=True)
+                    else:
+                        past_df = new_row
+                else:
+                    if not future_df.empty:
+                        future_df = pd.concat([future_df, new_row], ignore_index=True)
+                    else:
+                        future_df = new_row
+                
+                # Update the main dataframe
+                df = pd.concat([df, new_row], ignore_index=True)
+                
+                # Re-sort the dataframes by date
+                if not past_df.empty:
+                    past_df = past_df.sort_values('FltDate')
+                if not future_df.empty:
+                    future_df = future_df.sort_values('FltDate')
+                df = df.sort_values('FltDate')
+                
+                # Update the figure with the new data
+                # Clear existing traces
+                fig.data = []
+                
+                # Recreate traces with updated data
+                # Add past weight bars (green)
+                if not past_df.empty:
+                    fig.add_trace(
+                        go.Bar(
+                            x=past_df['FormattedDate'],
+                            y=past_df['ReportWeight'],
+                            name='Past Weight (kg)',
+                            marker_color='green',
+                            showlegend=True
+                        )
+                    )
+                    
+                    # Add past OBW line (red)
                     fig.add_trace(
                         go.Scatter(
-                            x=[past_date, future_date],
-                            y=[past_obw, future_obw],
-                            mode='lines',
-                            line=dict(color='orange', width=2, dash='dot'),
-                            showlegend=False
+                            x=past_df['FormattedDate'],
+                            y=past_df['OBW'],
+                            name='Past OBW',
+                            mode='lines+markers',
+                            line=dict(color='red', width=2),
+                            marker=dict(size=8, symbol='circle'),
+                            showlegend=True
+                        )
+                    )
+                
+                # Add future weight bars (blue)
+                if not future_df.empty:
+                    fig.add_trace(
+                        go.Bar(
+                            x=future_df['FormattedDate'],
+                            y=future_df['ReportWeight'],
+                            name='Pred Weight (kg)',
+                            marker_color='blue',
+                            showlegend=True
+                        )
+                    )
+                    
+                    # Add future OBW line (orange)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=future_df['FormattedDate'],
+                            y=future_df['OBW'],
+                            name='Pred OBW',
+                            mode='lines+markers',
+                            line=dict(color='orange', width=2),
+                            marker=dict(size=8, symbol='circle'),
+                            showlegend=True
                         )
                     )
         except Exception as e:
-            print(f"Error adding today's line or separator: {e}")
-            # Skip adding today's line if there's an error
+            print(f"Error processing departure date: {e}")
+            # Skip if there's an error
             pass
-    else:
-        # If today isn't in the dataset but we have both past and future data,
-        # add the dotted orange line at the transition point
-        if not past_df.empty and not future_df.empty:
-            try:
-                # Find the last date in past_df and first date in future_df
-                transition_date_past = past_df.loc[past_df['FltDate'] == past_df['FltDate'].max()]
-                transition_date_future = future_df.loc[future_df['FltDate'] == future_df['FltDate'].min()]
-                
-                if not transition_date_past.empty and not transition_date_future.empty:
-                    # Get dates and OBW values for transition
-                    transition_date_str_past = transition_date_past['FormattedDate'].iloc[0]
-                    transition_date_str_future = transition_date_future['FormattedDate'].iloc[0]
-                    past_obw = transition_date_past['OBW'].iloc[0]
-                    future_obw = transition_date_future['OBW'].iloc[0]
-                    
-                    # Add dotted orange line between the two dates
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[transition_date_str_past, transition_date_str_future],
-                            y=[past_obw, future_obw],
-                            mode='lines',
-                            line=dict(color='orange', width=2, dash='dot'),
-                            showlegend=False
-                        )
-                    )
-            except Exception as e:
-                print(f"Error adding separator line: {e}")
-                pass
+        
+        # Get all dates to ensure xaxis includes everything we need
+        all_dates = sorted(list(set(df['FormattedDate'].values)))
+        
+        # Make sure departure_str is in the list
+        if departure_str not in all_dates:
+            all_dates.append(departure_str)
+            all_dates.sort()  # Re-sort to keep in order
+        
+        # Update layout with single Y-axis and title in plot
+        fig.update_layout(
+            title=dict(
+                text=f"Weight and Overbooking Status: {flight_no} {origin}-{destination}",
+                x=0.5,  # Center title
+                y=0.98  # Position near top
+            ),
+            xaxis=dict(
+                title="Flight Date",
+                tickmode='array',
+                tickvals=all_dates,  # Show all dates including departure
+                tickfont=dict(size=10),  # Smaller font for dates
+                tickangle=45  # Angle the date labels to avoid overlap
+            ),
+            yaxis=dict(
+                title="Weight (kg) / OBW",
+                rangemode="tozero",  # Make y-axis start from zero
+                range=[0, y_axis_max]  # Set range to 500 higher than the Today annotation height
+            ),
+            legend=dict(
+                x=1.05,
+                y=1,
+                xanchor='left',
+                yanchor='top',
+                bgcolor='rgba(255,255,255,0.8)',
+                bordercolor='black',
+                borderwidth=1
+            ),
+            template='plotly_white',
+            margin=dict(l=50, r=100, t=50, b=70),  # Increased bottom margin for angled date labels
+            height=700,
+            hovermode="x unified"
+        )
+        
+        # Create the graph component with explicit dimensions
+        graph = dcc.Graph(
+            id='weight-obw-graph',
+            figure=fig,
+            style={'height': '100%', 'width': '100%'},
+            config={'responsive': True, 'displayModeBar': False}
+        )
+        
+        return graph
     
-    # Make sure departure date appears on x-axis (but don't add a vertical line)
-    try:
-        # If departure date is not in dataset, add it as a category on x-axis
-        if departure_str not in df['FormattedDate'].values:
-            print(f"Departure date {departure_str} not found in dataset, adding to x-axis")
-            
-            # Add an empty entry for this date to make it appear on the x-axis
-            new_row = pd.DataFrame({
-                'FltNo': [flight_no],
-                'FltDate': [departure_date],
-                'FormattedDate': [departure_str],
-                'Origin': [origin],
-                'Destination': [destination],
-                'ReportWeight': [0],  # Zero values won't show a bar
-                'ReportVolume': [0],
-                'OBW': [0],
-                'DateOnly': [departure_date]
-            })
-            
-            # Add this to the appropriate dataframe (past or future)
-            if departure_date < today:
-                if not past_df.empty:
-                    past_df = pd.concat([past_df, new_row], ignore_index=True)
-                else:
-                    past_df = new_row
-            else:
-                if not future_df.empty:
-                    future_df = pd.concat([future_df, new_row], ignore_index=True)
-                else:
-                    future_df = new_row
-            
-            # Update the main dataframe
-            df = pd.concat([df, new_row], ignore_index=True)
-            
-            # Re-sort the dataframes by date
-            if not past_df.empty:
-                past_df = past_df.sort_values('FltDate')
-            if not future_df.empty:
-                future_df = future_df.sort_values('FltDate')
-            df = df.sort_values('FltDate')
-            
-            # Update the figure with the new data
-            # Clear existing traces
-            fig.data = []
-            
-            # Recreate traces with updated data
-            # Add past weight bars (green)
-            if not past_df.empty:
-                fig.add_trace(
-                    go.Bar(
-                        x=past_df['FormattedDate'],
-                        y=past_df['ReportWeight'],
-                        name='Past Weight (kg)',
-                        marker_color='green',
-                        showlegend=True
-                    )
-                )
-                
-                # Add past OBW line (red)
-                fig.add_trace(
-                    go.Scatter(
-                        x=past_df['FormattedDate'],
-                        y=past_df['OBW'],
-                        name='Past OBW',
-                        mode='lines+markers',
-                        line=dict(color='red', width=2),
-                        marker=dict(size=8, symbol='circle'),
-                        showlegend=True
-                    )
-                )
-            
-            # Add future weight bars (blue)
-            if not future_df.empty:
-                fig.add_trace(
-                    go.Bar(
-                        x=future_df['FormattedDate'],
-                        y=future_df['ReportWeight'],
-                        name='Pred Weight (kg)',
-                        marker_color='blue',
-                        showlegend=True
-                    )
-                )
-                
-                # Add future OBW line (orange)
-                fig.add_trace(
-                    go.Scatter(
-                        x=future_df['FormattedDate'],
-                        y=future_df['OBW'],
-                        name='Pred OBW',
-                        mode='lines+markers',
-                        line=dict(color='orange', width=2),
-                        marker=dict(size=8, symbol='circle'),
-                        showlegend=True
-                    )
-                )
     except Exception as e:
-        print(f"Error processing departure date: {e}")
-        # Skip if there's an error
-        pass
-    
-    # Get all dates to ensure xaxis includes everything we need
-    all_dates = sorted(list(set(df['FormattedDate'].values)))
-    
-    # Make sure departure_str is in the list
-    if departure_str not in all_dates:
-        all_dates.append(departure_str)
-        all_dates.sort()  # Re-sort to keep in order
-    
-    # Update layout with single Y-axis and title in plot
-    fig.update_layout(
-        title=dict(
-            text="Weight and Overbooking Status",
-            x=0.5,  # Center title
-            y=0.98  # Position near top
-        ),
-        xaxis=dict(
-            title="Flight Date",
-            tickmode='array',
-            tickvals=all_dates,  # Show all dates including departure
-            tickfont=dict(size=10),  # Smaller font for dates
-            tickangle=45  # Angle the date labels to avoid overlap
-        ),
-        yaxis=dict(
-            title="Weight (kg) / OBW",
-            rangemode="tozero",  # Make y-axis start from zero
-            range=[0, y_axis_max]  # Set range to 500 higher than the Today annotation height
-        ),
-        legend=dict(
-            x=1.05,
-            y=1,
-            xanchor='left',
-            yanchor='top',
-            bgcolor='rgba(255,255,255,0.8)',
-            bordercolor='black',
-            borderwidth=1
-        ),
-        template='plotly_white',
-        margin=dict(l=50, r=100, t=50, b=70),  # Increased bottom margin for angled date labels
-        height=700,
-        hovermode="x unified"
-    )
-    
-    # Create the graph component with explicit dimensions
-    graph = dcc.Graph(
-        id='weight-obw-graph',
-        figure=fig,
-        style={'height': '100%', 'width': '100%'},
-        config={'responsive': True, 'displayModeBar': False}
-    )
-    
-    return graph
+        # Get full stack trace for debugging
+        stack_trace = traceback.format_exc()
+        print(f"Error: {e}")
+        print(f"Stack trace: {stack_trace}")
+        
+        return html.Div(f"Error updating graph: {str(e)}", 
+                        style={
+                            "display": "flex",
+                            "justifyContent": "center",
+                            "alignItems": "center",
+                            "height": "100%",
+                            "fontSize": "16px",
+                            "color": "red"
+                        })
+
+# Add route to handle root path and query parameters
+@server.route('/')
+def index():
+    # This is just to log when the root route is accessed with query parameters
+    if request.args:
+        print(f"Root route accessed with query parameters: {request.args}")
+    return app.index()
 
 if __name__ == '__main__':
     app.run_server(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8050)))
